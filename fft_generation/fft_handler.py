@@ -68,10 +68,11 @@ class FftHandler:
 
         # Calculate FFT on next window of samples
         fft_data = self.fft_on_window(self.sample_data[:self.window_length_samples])
+        amplitude = np.abs(fft_data)
 
         # Send calculated data to plot widget
         # TODO: Add to plot_widget here
-        self.plot_widget.set_data(self.frequency_vector, fft_data)
+        self.plot_widget.set_data(self.frequency_vector, amplitude)
         # TODO: Emit signal with other data potentially
 
         # "Hop" forward by trimming off the next "hop_length" samples
@@ -110,7 +111,7 @@ class FftHandler:
         """
         Updates windowing function to new value, recalculate the windowing coefficients.
         :param windowing_func: Windowing enumeration
-        """ 
+        """
         self.windowing_function = windowing_func
         self.windowing_coefficients = self.windowing_function(self.window_length_samples)
 
