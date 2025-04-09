@@ -11,14 +11,24 @@ class AudioFFTApp(QMainWindow, Ui_MainWindow):
 
         # Get audio sample data
         self.sample_rate, self.sample_data = test_data_gen()
-        self.num_samples = len(self.sample_data)
-        self.x_time = np.linspace(0, float(self.num_samples) / self.sample_rate, self.num_samples)
+        self.samples_read = 0
 
         self.new_plot_widget = GeneralPlotWidget()
-        self.new_plot_widget.set_data(self.x_time, self.sample_data)
+
+        self.fft_handler = FftHandler(self.new_plot_widget, self.sample_rate)
 
         # Add to layout
         self.verticalLayout.addWidget(self.new_plot_widget.widget_container)
+        button = QPushButton("Add Signal data")
+        self.verticalLayout.addWidget(button)
+        button.clicked.connect(self.generate_signal)
+
+    def generate_signal(self):
+        # Generate signal and send to FFT Handler
+        samples_to_read = self.fft_handler.window_length_samples
+        signal_to_send = self.sample_data[self.samples_read:self.samples_read + samples_to_read]
+        self.samples_read += samples_to_read
+        self.fft_handler.add_signal(signal_to_send)
 
 
 # Run the application
