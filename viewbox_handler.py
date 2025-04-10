@@ -1,10 +1,12 @@
+from typing import Tuple
+
 import pyqtgraph as pg
 import numpy as np
 import time
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QPushButton
 from PySide6.QtCore import Signal, QEvent, QTimer
 
-DEFAULT_Y_PADDING_RATIO = 0.1
+DEFAULT_Y_PADDING_RATIO = 0.4
 GRAPH_UPDATE_TIMEOUT = 0.05  # Seconds between graph updates when X-axis range is changed
 GRAPH_TIMER_UPDATE_TIMEOUT = int((GRAPH_UPDATE_TIMEOUT + 0.1) * 1000)  # Timer to render one last time after plot bounds change
 
@@ -15,14 +17,16 @@ class GeneralPlotWidget:
     TODO: Autoscale functionality is not implemented. Default autoscale doesn't work great, but can turn that functionality back on if desired
     TODO: When dataset gets to be greater than 1,000,000-2,000,000 samples, plot chugs when bounds are fully zoomed out. Implement a "downsampling"-esque feature to only show reasonable number of datapoints
     """
-
-    def __init__(self):
+    def __init__(self, x_axis_label: str, y_axis_label: str):
         # Reference to plot data. Set with the "set_data" method
         self.x_data = None
         self.y_data = None
         self.y_padding = DEFAULT_Y_PADDING_RATIO
 
         self.widget_container, self.plot_widget = self.setup_widget_container()
+
+        # Set axes labels/units
+        self.set_axis_label(x_axis_label, y_axis_label)
 
         # Keep reference of last update time, and keep timer for final update of graph after scrolling, zooming, etc.
         self.graph_update_time = time.time()
@@ -71,6 +75,10 @@ class GeneralPlotWidget:
 
         return container, plot_widget
 
+    def set_axis_label(self, x_axis_label: str, y_axis_label: str):
+        self.plot_widget.setLabel('bottom', x_axis_label)
+        self.plot_widget.setLabel('left', y_axis_label)
+
     def update_plot_data(self):
         # Check if we can update the plot yet
         now = time.time()
@@ -98,3 +106,9 @@ class GeneralPlotWidget:
             y_max = float(np.max(filtered_y))
 
             self.plot_widget.setYRange(y_min - self.y_padding, y_max + self.y_padding)
+
+
+class FftPlotWidget(GeneralPlotWidget):
+    def __init__(self):
+        super().__init__()
+
