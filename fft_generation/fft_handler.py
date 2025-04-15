@@ -1,10 +1,13 @@
 from enum import Enum
+from typing import Tuple
+
 import numpy as np
 import numpy.typing as npt
-from PySide6.QtCore import QObject, Signal, SignalInstance, QTimer
+from PySide6.QtCore import QObject, Signal, SignalInstance, QTimer, Slot
 from scipy.io.wavfile import read
 
 MS_IN_S = 1000  # 1000ms per second
+
 # Default values for FFT calculations
 DEFAULT_SAMPLE_RATE_HF = 5120  # Default sampling rate for FFT Handler
 DEFAULT_SAMPLE_RATE_LF = DEFAULT_SAMPLE_RATE_HF / 2
@@ -13,8 +16,15 @@ DEFAULT_WINDOW_OVERLAP = 0.75  # Default ratio for window overlap
 DEFAULT_FFT_INTERVAL = 100  # Default interval between FFTs
 
 # TODO: Move away from these defaults and allow for the array config message to set these values
-DEFAULT_NUMBER_LF_CHANNELS = 8
-DEFAULT_NUMBER_HF_CHANNELS = 3
+NUMBER_LF_CHANNELS_PER_LINE = 40
+NUMBER_HF_CHANNELS_PER_LINE = 32
+
+DEFAULT_TOTAL_SENSORS_PER_LINE = NUMBER_LF_CHANNELS_PER_LINE + NUMBER_HF_CHANNELS_PER_LINE + NUMBER_LF_CHANNELS_PER_LINE
+DEFAULT_NUMBER_LINES = 2
+
+TOTAL_SAMPLES_PER_MESSAGE = DEFAULT_NUMBER_LINES * DEFAULT_TOTAL_SENSORS_PER_LINE * DEFAULT_SAMPLE_RATE_HF
+TOTAL_SAMPLE_BYTES_PER_MESSAGE = TOTAL_SAMPLES_PER_MESSAGE * 4  # 4 bytes in each sample (float32)
+
 
 class WindowingFunctionEnum(Enum):
     """Window function types and their corresponding method calls"""
@@ -36,32 +46,59 @@ class AcousticHandler(QObject):
     Class used to handle all acoustic data processing
     Receives signals from server threads and delegates all acoustic handling of these
     """
-    fft_amplitude = Signal(object, object)  # FFT amplitude to plot: <np.array(x_axis), np.array(y_axis)>
+    fft_amplitude = Signal(object, object)  # F FT amplitude to plot: <np.array(x_axis), np.array(y_axis)>
     fft_phase = Signal(object, object)  # FFT phase to plot: <np.array(x_axis), np.array(y_axis)>
+    raw_data_signal = Signal(object)
 
-    def __init__(self, sample_rate: float, window_length_ms: int = DEFAULT_WINDOW_LENGTH_MS, window_overlap: float = DEFAULT_WINDOW_OVERLAP):
+    def __init__(self, sample_rate: float = DEFAULT_SAMPLE_RATE_HF, window_length_ms: int = DEFAULT_WINDOW_LENGTH_MS, window_overlap: float = DEFAULT_WINDOW_OVERLAP):
         super().__init__()
+
+        # TODO: Update so that ArrayConfigMessage will change these values to values stored in message
+        self.number_lines = DEFAULT_NUMBER_LINES
+        self.total_sensors_per_line = DEFAULT_TOTAL_SENSORS_PER_LINE
 
         # Instantiate FFT Handler object for FFT calculations
         self.fft_handler = FftHandler(sample_rate, self.fft_amplitude, self.fft_phase)
 
         # Instantiate raw acoustic datat handler for caching and displaying raw acoustic data
-        self.acoustic_data_handler = RawAcousticDataHandler()
+        self.raw_data_handler = RawAcousticDataHandler()
 
         # TODO: Figure out how we are going to select sensors to display in FFTs
-        self.active_sensor_number = 0
+        self.active_fft_sensor_number = (0, 0)  # Default to 0th line, 0th sensor for FFTs
+        self.active_fft_sensor_number = (0, 0)  # Default to 0th line, 0th sensor for FFTs
 
-    def retrieve_acoustic_data(self):
+    def set_active_sensor(self, sensor_number: Tuple[int, int]):
+        # Check validity of sensor number
+        if sensor_number[0] >= DEFAULT_NUMBER_LINES or sensor_number[1] >= DEFAULT_TOTAL_SENSORS_PER_LINE:
+            RuntimeError(f"Trying to access samples for non existent sensor. Sensor array bounds are ({DEFAULT_NUMBER_LINES},{DEFAULT_TOTAL_SENSORS_PER_LINE}), tried to access ({sensor_number[0]},{sensor_number[1]})")
+
+        self.active_fft_sensor_number = sensor_number
+
+    @Slot()
+    def retrieve_acoustic_data(self, data_array: npt.NDArray):
         """
-        # TODO: Implement when signal is set up for AcousticDataMessage reception
         Slot called to handle any time an Acoustic Data Message is received.
         De-interleaves acoustic data and adds to cached data, as well as adding new signal data to FFT Handler
         :return:
         """
-        raise NotImplemented("retrieve_acoustic_data method not yet implemented")
+        if not isinstance(data_array, np.ndarray):
+            raise RuntimeError(f"retrieve_acoustic_data method requires np.ndarray type to process. Received type {type(data_array).__name__}")
+
+        data_per_sample = np.reshape(data_array, (DEFAULT_NUMBER_LINES, DEFAULT_TOTAL_SENSORS_PER_LINE, -1))
+        self.raw_data_signal.emit(data_per_sample)
+
+        self.raw_data_handler.add_to_channels(data_per_sample)
+
+        # TODO: Call FftHandler to calculate FFT on new data
+
 
 
 class FftHandler:
+    """
+    Class used to perform FFT calculations on provided signal data based on provided parameters
+    This class has no indication of timing intervals for FFT. It simply performs FFTs on the passed in signal
+    When FFTs calculations are complete, signals are emitted for
+    """
     def __init__(self, sample_rate: float, fft_amp_signal: SignalInstance, fft_phase_signal: SignalInstance, window_length_ms: int = DEFAULT_WINDOW_LENGTH_MS, window_overlap: float = DEFAULT_WINDOW_OVERLAP):
         if sample_rate is None:
             raise RuntimeError(f"Need to set sample_rate parameter for {FftHandler.__name__} instance")
@@ -106,7 +143,6 @@ class FftHandler:
 
         if len(self.sample_data) < self.window_length_samples:
             # Not ready to calculate next FFT, returning
-            print("Not enough data yet")
             return
 
         # Calculate FFT on next window of samples
@@ -170,24 +206,34 @@ class RawAcousticDataHandler:
     This class should interface in some way with the raw data GUI aspect
     This class should provide functionality for exporting raw acoustic data
     """
-    def __init__(self, number_lf_channels: int = DEFAULT_NUMBER_LF_CHANNELS, number_hf_channels: int = DEFAULT_NUMBER_HF_CHANNELS):
-        self.number_lf_channels = number_lf_channels
-        self.number_hf_channels = number_hf_channels
+    def __init__(self, number_lines: int = DEFAULT_NUMBER_LINES, number_lf_channels_per_line: int = NUMBER_LF_CHANNELS_PER_LINE, number_hf_channels_per_line: int = NUMBER_HF_CHANNELS_PER_LINE):
+        self.number_lines = number_lines
+        self.number_lf_channels_per_line = number_lf_channels_per_line
+        self.number_hf_channels_per_line = number_hf_channels_per_line
+        self.total_sensors_per_line = self.number_lf_channels_per_line + self.number_hf_channels_per_line + self.number_lf_channels_per_line
 
         # Create arrays for low frequency and high frequency sensor data
-        self.lf_channels = np.empty((self.number_lf_channels, 0))
-        self.hf_channels = np.empty((self.number_hf_channels, 0))
+        self.lf_channels = np.empty((self.number_lf_channels_per_line, 0))
+        self.hf_channels = np.empty((self.number_hf_channels_per_line, 0))
 
-    def add_to_channels(self, lf_channel_data: npt.NDArray, hf_channel_data: npt.NDArray):
-        # First verify sizes of arrays
-        if self.number_lf_channels != lf_channel_data.shape[0]:
-            raise RuntimeError(f"Array shape for new data does not match number of LF channels. Expected {self.number_lf_channels}, got {lf_channel_data.shape[0]}")
-        elif self.number_hf_channels != hf_channel_data.shape[0]:
-            raise RuntimeError(f"Array shape for new data does not match number of HF channels. Expected {self.number_hf_channels}, got {hf_channel_data.shape[0]}")
+        # Create data cache for all samples
+        self.sample_data = np.empty((self.number_lines, self.total_sensors_per_line, 0))
 
-        # Append data to cached channel data
-        self.lf_channels = np.hstack((self.lf_channels, lf_channel_data))
-        self.hf_channels = np.hstack((self.hf_channels, hf_channel_data))
+    def add_to_channels(self, new_sample_data: npt.NDArray):
+        # First verify size of array
+        if new_sample_data.shape[0] != self.number_lines or new_sample_data.shape[1] != self.total_sensors_per_line:
+            raise RuntimeError(f"Sample data shape does not match expected shape. Expected ({self.number_lines},{self.total_sensors_per_line},n) but got {new_sample_data.shape}")
+
+        # Append data to cached sample data
+        self.sample_data = np.concatenate((self.sample_data, new_sample_data), axis=2)
+
+    def get_channel_data(self, sensor_number: Tuple[int, int]):
+        if sensor_number[0] >= DEFAULT_NUMBER_LINES or sensor_number[1] >= DEFAULT_TOTAL_SENSORS_PER_LINE:
+            RuntimeError(f"Trying to access samples for non existent sensor. Sensor array bounds are ({DEFAULT_NUMBER_LINES},{DEFAULT_TOTAL_SENSORS_PER_LINE}), tried to access ({sensor_number[0]},{sensor_number[1]})")
+        line_num = sensor_number[0]
+        sensor_number = sensor_number[1]
+        return self.sample_data[line_num][sensor_number]
+
 
     def export_cached_acoustic_data(self):
         """
@@ -199,6 +245,32 @@ class RawAcousticDataHandler:
 
 
 ##### Test functions #####
+class SampleSignalGenerator(QObject):
+    sample_signal = Signal(object)
+
+    def __init__(self, interval_ms=1000, parent=None):
+        super().__init__(parent)
+        self.data_array = generate_sample_data()
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(interval_ms)
+        self.timer.timeout.connect(self.emit_data)
+        self.timer.start()
+
+    def emit_data(self):
+        self.sample_signal.emit(self.data_array)
+
+
+def generate_sample_data():
+    per_line_array = []
+    for i in range(DEFAULT_TOTAL_SENSORS_PER_LINE):
+        per_line_array += DEFAULT_SAMPLE_RATE_HF * [float(i)]
+
+    per_line_array += per_line_array
+    data_array = np.array(per_line_array, dtype=np.float32)
+    return data_array
+
+
 def test_data_gen():
     sample_rate = DEFAULT_SAMPLE_RATE_LF
     signal_duration_s = 3.0  # 3 Second signal
@@ -224,4 +296,17 @@ def test_data_gen():
     return sample_rate, signal_samples
 
 if __name__ == "__main__":
-    sampling_rate, sample_data = test_data_gen()
+    # Instantiate acoustic handler
+    acoustic_handler = AcousticHandler(DEFAULT_SAMPLE_RATE_HF)
+
+    # Generate test data for samples
+    array_samples = generate_sample_data()
+
+    acoustic_handler.retrieve_acoustic_data(array_samples)
+    acoustic_handler.retrieve_acoustic_data(array_samples)
+
+    sensor_tuple = (0, 0)
+    channel_data = acoustic_handler.raw_data_handler.get_channel_data(sensor_tuple)
+    print(f"Channel data: {channel_data}")
+
+
